@@ -642,16 +642,24 @@ add_filter('woocommerce_cart_get_total', function($total) {
 
         aa_log_transaction('Payment option from cookie', [
             'payment_option' => $payment_option,
-            'all_cookies' => array_keys($_COOKIE),
+            'payment_option_raw' => $_COOKIE['aa_payment_option'] ?? 'NOT SET',
+            'payment_option_length' => strlen($payment_option),
+            'is_pay_deposit' => ($payment_option === 'pay_deposit') ? 'YES' : 'NO',
         ]);
 
         if ($payment_option === 'pay_deposit') {
+            aa_log_transaction('INSIDE pay_deposit block - getting checkout instance');
+
             $checkout_instance = AA_Checkout::get_instance();
+            aa_log_transaction('Got checkout instance, getting deposit amount');
+
             $deposit_amount = $checkout_instance->get_min_deposit_amount();
 
             aa_log_transaction('Deposit payment selected', [
                 'deposit_amount' => $deposit_amount,
                 'original_total' => $total,
+                'deposit_type' => gettype($deposit_amount),
+                'total_type' => gettype($total),
             ]);
 
             if ($deposit_amount > 0 && $deposit_amount < $total) {
@@ -660,7 +668,19 @@ add_filter('woocommerce_cart_get_total', function($total) {
                     'to' => $deposit_amount,
                 ]);
                 return $deposit_amount;
+            } else {
+                aa_log_transaction('NOT modifying - conditions not met', [
+                    'deposit_amount' => $deposit_amount,
+                    'total' => $total,
+                    'deposit_gt_0' => ($deposit_amount > 0) ? 'YES' : 'NO',
+                    'deposit_lt_total' => ($deposit_amount < $total) ? 'YES' : 'NO',
+                ]);
             }
+        } else {
+            aa_log_transaction('NOT pay_deposit - skipping modification', [
+                'payment_option_value' => $payment_option,
+                'expected' => 'pay_deposit',
+            ]);
         }
 
     } catch (Exception $e) {
