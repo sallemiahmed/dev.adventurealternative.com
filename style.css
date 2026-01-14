@@ -1,0 +1,94 @@
+/*
+Theme Name: GeneratePress Child
+Theme URI: https://generatepress.com
+Template: generatepress
+Author: Tom Usborne
+Author URI: https://tomusborne.com
+Description: GeneratePress is a lightweight WordPress theme built with a focus on speed and usability. Performance is important to us, which is why a fresh GeneratePress install adds less than 10kb (gzipped) to your page size. We take full advantage of the block editor (Gutenberg), which gives you more control over creating your content. If you use page builders, GeneratePress is the right theme for you. It is completely compatible with all major page builders, including Beaver Builder and Elementor. Thanks to our emphasis on WordPress coding standards, we can boast full compatibility with all well-coded plugins, including WooCommerce. GeneratePress is fully responsive, uses valid HTML/CSS, and is translated into over 25 languages by our amazing community of users. A few of our many features include 60+ color controls, powerful dynamic typography, 5 navigation locations, 5 sidebar layouts, dropdown menus (click or hover), and 9 widget areas. Learn more and check out our powerful premium version at https://generatepress.com
+Tags: two-columns,three-columns,one-column,right-sidebar,left-sidebar,footer-widgets,blog,e-commerce,flexible-header,full-width-template,buddypress,custom-header,custom-background,custom-menu,custom-colors,sticky-post,threaded-comments,translation-ready,rtl-language-support,featured-images,theme-options
+Version: 3.3.1.1705399450
+Updated: 2024-01-16 10:04:10
+
+*/
+body.aa-pay-later #payment > .wc_payment_methods{
+	display: none !important;
+}
+.order-transactions-container,
+.billing-details-container,
+.passengers-details-container{
+	margin: 2em 0;
+}
+.aa-data-fields p.sub-title{
+	font-weight: 600;
+	font-size: 1.2em;
+}
+.aa-data-fields p.aa-data-field{
+	font-weight: 600;
+}
+.aa-data-fields p.aa-data-field > span{
+	font-weight: 400;
+}
+table#order-transactions thead th,
+#view-order table.shop_table thead th,
+#checkout table.shop_table thead th{
+	text-align: left;
+}
+table#order-transactions tfoot th,
+#view-order table.shop_table tfoot th,
+#checkout table.shop_table tfoot th{
+	text-align: right;
+}
+table#order-transactions a.button.pay,
+#view-order table.shop_table a.button.pay,
+#checkout table.shop_table a.button.pay{
+	padding: 0.4em 0.6em;
+    line-height: 1;
+    font-size: 1em;
+    display: inline-block;
+    margin-left: 0.3em;
+}
+#order-transactions br + a.button.pay{
+	margin: 0.6em 0 !important;
+}
+table.woocommerce-orders-table td.woocommerce-orders-table__cell-order-actions a.button{
+	display: inline-block;
+	margin-right: 0.3em;
+}
+section#view-order,
+section#checkout[data-step="additional-payment-received"]{
+	margin: 2em 0;
+}
+#pay-for-order-payment_option-container{
+	margin: 1.5em 0;
+}
+input[name="custom_payment_amount"]{
+	width: min(220px, 100%);
+}
+.custom-currency-switcher{
+	margin: 1em 0;
+}
+.custom-currency-switcher > p{
+	margin: 0 0 0.3em;
+}
+.custom-currency-switcher > label{
+	display: inline-block;
+	margin-right: 15px;
+}
+#modify-order-extras{
+	margin: 1.5em 0;
+}
+.aa-order-items-product-error-message{
+	color: #cd0000;
+	margin: 0.1em 0 0.3em;
+}
+.tab-content .add-to-cart-controls button.aa-disabled{
+	background: #cdcdcd;
+    color: #eee;
+}
+.tab-content .add-to-cart-controls input{
+	padding-left: 0;
+	padding-right: 0;
+}
+.tab-content .add-to-cart-controls button.aa-disabled:hover{
+	cursor: not-allowed;
+}

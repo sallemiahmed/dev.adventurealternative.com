@@ -1,0 +1,347 @@
+/**
+ * 3DS Auto-Proceed Fix + Double Payment Protection
+ *
+ * Handles automatic form resubmission after 3DS verification
+ * Prevents double payments with idempotency keys and submit protection
+ *
+ * @author Ahmed Sallemi
+ * @date January 2026
+ * @version 2.0 - Added double payment protection
+ */
+
+(function($) {
+    'use strict';
+
+    // Idempotency key for this checkout session
+    let checkoutIdempotencyKey = null;
+    let isSubmitting = false;
+    let orderCreated = false;
+    let pendingOrderId = null;
+
+    /**
+     * Generate unique idempotency key for this checkout session
+     * Key is based on: cart hash + timestamp + random string
+     */
+    function generateIdempotencyKey() {
+        const cartHash = $('input[name="woocommerce-process-checkout-nonce"]').val() || '';
+        const timestamp = Date.now();
+        const random = Math.random().toString(36).substring(2, 15);
+        return 'aa_' + cartHash.substring(0, 8) + '_' + timestamp + '_' + random;
+    }
+
+    /**
+     * Get or create idempotency key for this session
+     */
+    function getIdempotencyKey() {
+        // Check sessionStorage first
+        let storedKey = sessionStorage.getItem('aa_checkout_idempotency_key');
+        let storedCartHash = sessionStorage.getItem('aa_checkout_cart_hash');
+        let currentCartHash = $('input[name="woocommerce-process-checkout-nonce"]').val() || '';
+
+        // If cart changed, generate new key
+        if (storedKey && storedCartHash === currentCartHash) {
+            checkoutIdempotencyKey = storedKey;
+        } else {
+            checkoutIdempotencyKey = generateIdempotencyKey();
+            sessionStorage.setItem('aa_checkout_idempotency_key', checkoutIdempotencyKey);
+            sessionStorage.setItem('aa_checkout_cart_hash', currentCartHash);
+        }
+
+        console.log('[AA Checkout] Idempotency key:', checkoutIdempotencyKey);
+        return checkoutIdempotencyKey;
+    }
+
+    /**
+     * Check if we're returning from 3DS verification
+     */
+    function check3DSReturn() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const redirectStatus = urlParams.get('redirect_status');
+        const paymentIntent = urlParams.get('payment_intent');
+
+        if (redirectStatus && paymentIntent) {
+            console.log('[AA Checkout] 3DS return detected:', redirectStatus);
+
+            if (redirectStatus === 'succeeded') {
+                showProcessingMessage();
+                setTimeout(function() {
+                    if (window.location.pathname.includes('checkout')) {
+                        console.log('[AA Checkout] 3DS auto-submit fallback');
+                        autoSubmitAfter3DS(paymentIntent);
+                    }
+                }, 3000);
+            } else if (redirectStatus === 'failed') {
+                showErrorMessage('Payment verification failed. Please try again.');
+                resetCheckoutState();
+            }
+        }
+    }
+
+    /**
+     * Show processing overlay
+     */
+    function showProcessingMessage() {
+        if ($('#aa-3ds-overlay').length) return;
+
+        const overlay = $('<div id="aa-3ds-overlay" style="' +
+            'position:fixed;top:0;left:0;right:0;bottom:0;' +
+            'background:rgba(255,255,255,0.9);z-index:99999;' +
+            'display:flex;align-items:center;justify-content:center;' +
+            'flex-direction:column;' +
+        '">' +
+            '<div class="aa-spinner" style="' +
+                'border:4px solid #f3f3f3;border-top:4px solid #3498db;' +
+                'border-radius:50%;width:50px;height:50px;' +
+                'animation:aa-spin 1s linear infinite;' +
+            '"></div>' +
+            '<p style="margin-top:20px;font-size:18px;">Completing your payment...</p>' +
+            '<p style="color:#666;">Please wait, do not close this page.</p>' +
+        '</div>');
+
+        $('<style>@keyframes aa-spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}</style>').appendTo('head');
+        $('body').append(overlay);
+    }
+
+    /**
+     * Hide processing overlay
+     */
+    function hideProcessingMessage() {
+        $('#aa-3ds-overlay').remove();
+    }
+
+    /**
+     * Show error message
+     */
+    function showErrorMessage(message) {
+        hideProcessingMessage();
+        const $notices = $('.woocommerce-notices-wrapper').first();
+        if ($notices.length) {
+            $notices.html('<div class="woocommerce-error" role="alert">' + message + '</div>');
+            $('html, body').animate({ scrollTop: $notices.offset().top - 100 }, 500);
+        } else {
+            alert(message);
+        }
+    }
+
+    /**
+     * Auto-submit form after 3DS (fallback)
+     */
+    function autoSubmitAfter3DS(paymentIntent) {
+        const $form = $('form.checkout');
+
+        if (!$form.length) {
+            console.error('[AA Checkout] Checkout form not found');
+            return;
+        }
+
+        $('<input type="hidden" name="aa_3ds_completed" value="1">').appendTo($form);
+        $('<input type="hidden" name="aa_payment_intent" value="' + paymentIntent + '">').appendTo($form);
+
+        console.log('[AA Checkout] Auto-submitting form after 3DS');
+        $form.submit();
+    }
+
+    /**
+     * Reset checkout state (for fresh retry)
+     */
+    function resetCheckoutState() {
+        isSubmitting = false;
+        orderCreated = false;
+        pendingOrderId = null;
+        sessionStorage.removeItem('aa_checkout_idempotency_key');
+        sessionStorage.removeItem('aa_checkout_cart_hash');
+        sessionStorage.removeItem('aa_pending_order_id');
+        enablePlaceOrderButton();
+        console.log('[AA Checkout] Checkout state reset');
+    }
+
+    /**
+     * Disable place order button
+     */
+    function disablePlaceOrderButton() {
+        const $btn = $('#place_order');
+        $btn.prop('disabled', true);
+        $btn.addClass('aa-processing');
+        if (!$btn.data('original-text')) {
+            $btn.data('original-text', $btn.text());
+        }
+        $btn.text('Processing...');
+    }
+
+    /**
+     * Enable place order button
+     */
+    function enablePlaceOrderButton() {
+        const $btn = $('#place_order');
+        $btn.prop('disabled', false);
+        $btn.removeClass('aa-processing');
+        if ($btn.data('original-text')) {
+            $btn.text($btn.data('original-text'));
+        }
+    }
+
+    /**
+     * Enhanced payment option change handler
+     */
+    function initPaymentOptionHandler() {
+        const $paymentOptions = $('input[name="payment_option"]');
+
+        $paymentOptions.on('change', function() {
+            const value = $(this).val();
+            console.log('[AA Checkout] Payment option changed:', value);
+            sessionStorage.setItem('aa_payment_option', value);
+            $('body').trigger('update_checkout');
+        });
+
+        const savedOption = sessionStorage.getItem('aa_payment_option');
+        if (savedOption && $paymentOptions.length) {
+            $paymentOptions.filter('[value="' + savedOption + '"]').prop('checked', true).trigger('change');
+        }
+    }
+
+    /**
+     * IMPROVED: Submit protection that doesn't reset on error
+     */
+    function initSubmitProtection() {
+        const $form = $('form.checkout');
+
+        // Generate idempotency key on page load
+        getIdempotencyKey();
+
+        // Add idempotency key to form
+        if (!$('input[name="aa_idempotency_key"]').length) {
+            $('<input type="hidden" name="aa_idempotency_key">').appendTo($form);
+        }
+
+        $form.on('submit', function(e) {
+            // Update idempotency key in form
+            $('input[name="aa_idempotency_key"]').val(checkoutIdempotencyKey);
+
+            // Check if already submitting
+            if (isSubmitting) {
+                console.log('[AA Checkout] BLOCKED: Duplicate submission prevented');
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+            }
+
+            // Check if order already created in this session
+            if (orderCreated && pendingOrderId) {
+                console.log('[AA Checkout] BLOCKED: Order #' + pendingOrderId + ' already created');
+                showErrorMessage('An order has already been created. Please check your email or <a href="/my-account/orders/">view your orders</a>.');
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+            }
+
+            isSubmitting = true;
+            disablePlaceOrderButton();
+            console.log('[AA Checkout] Form submitted with idempotency key:', checkoutIdempotencyKey);
+
+            // DO NOT reset isSubmitting on timeout - only on explicit success or page reload
+        });
+
+        // Listen for successful checkout (redirect)
+        $(document.body).on('checkout_redirect', function(e, url) {
+            console.log('[AA Checkout] Checkout successful, redirecting...');
+            // Clear session on success
+            sessionStorage.removeItem('aa_checkout_idempotency_key');
+            sessionStorage.removeItem('aa_checkout_cart_hash');
+            sessionStorage.removeItem('aa_pending_order_id');
+        });
+
+        // IMPORTANT: Do NOT reset on checkout_error - this causes double payment!
+        // Instead, show a message asking user to refresh
+        $(document.body).on('checkout_error', function() {
+            console.log('[AA Checkout] Checkout error occurred');
+            hideProcessingMessage();
+
+            // Keep button disabled but change text
+            const $btn = $('#place_order');
+            $btn.text('Error - Please Refresh Page');
+
+            // Add refresh message
+            const $notices = $('.woocommerce-notices-wrapper').first();
+            if ($notices.length && !$notices.find('.aa-refresh-notice').length) {
+                $notices.append('<div class="woocommerce-info aa-refresh-notice" style="margin-top:10px;">' +
+                    'If the error persists, please <a href="javascript:location.reload()">refresh the page</a> and try again.' +
+                    '</div>');
+            }
+
+            // DO NOT reset isSubmitting here - prevents double payment!
+        });
+
+        // Track when order is created (via AJAX response)
+        $(document).ajaxComplete(function(event, xhr, settings) {
+            if (settings.url && settings.url.indexOf('wc-ajax=checkout') !== -1) {
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    if (response.result === 'success' || response.order_id) {
+                        orderCreated = true;
+                        pendingOrderId = response.order_id || 'unknown';
+                        sessionStorage.setItem('aa_pending_order_id', pendingOrderId);
+                        console.log('[AA Checkout] Order created:', pendingOrderId);
+                    }
+                } catch (e) {
+                    // Not JSON or parsing error, ignore
+                }
+            }
+        });
+
+        // Check for pending order from previous session
+        const storedOrderId = sessionStorage.getItem('aa_pending_order_id');
+        if (storedOrderId) {
+            orderCreated = true;
+            pendingOrderId = storedOrderId;
+            console.log('[AA Checkout] Restored pending order:', pendingOrderId);
+        }
+    }
+
+    /**
+     * Log checkout events for debugging
+     */
+    function initCheckoutLogging() {
+        $(document.body).on('updated_checkout', function() {
+            console.log('[AA Checkout] Checkout updated');
+            // Re-add idempotency key field if lost during update
+            if (!$('input[name="aa_idempotency_key"]').length) {
+                $('<input type="hidden" name="aa_idempotency_key" value="' + checkoutIdempotencyKey + '">').appendTo('form.checkout');
+            }
+        });
+
+        $(document.body).on('payment_method_selected', function() {
+            console.log('[AA Checkout] Payment method selected');
+        });
+
+        $('form.checkout').on('checkout_place_order', function() {
+            console.log('[AA Checkout] Order being placed with key:', checkoutIdempotencyKey);
+            return true;
+        });
+    }
+
+    /**
+     * Add CSS for button states
+     */
+    function addStyles() {
+        $('<style>' +
+            '#place_order.aa-processing { opacity: 0.7; cursor: not-allowed; }' +
+            '#place_order:disabled { background-color: #ccc !important; }' +
+            '.aa-refresh-notice { background-color: #f0f0f0; border-left-color: #0073aa; }' +
+        '</style>').appendTo('head');
+    }
+
+    // Initialize on document ready
+    $(document).ready(function() {
+        console.log('[AA Checkout] Initializing v2.0 - Double Payment Protection');
+
+        addStyles();
+        check3DSReturn();
+        initPaymentOptionHandler();
+        initSubmitProtection();
+        initCheckoutLogging();
+
+        // Expose reset function for manual recovery
+        window.aaResetCheckout = resetCheckoutState;
+    });
+
+})(jQuery);
