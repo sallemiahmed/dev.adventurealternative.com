@@ -2,6 +2,79 @@
 
 require_once __DIR__ . '/checkout-currency.php';
 
+// ============================================
+// COMPREHENSIVE TRANSACTION LOGGING
+// Logs all checkout flow to individual files
+// ============================================
+function aa_log_transaction($message, $data = [], $force_new = false) {
+    static $session_id = null;
+    static $log_file = null;
+
+    // Create logs directory
+    $logs_dir = __DIR__ . '/logs';
+    if (!file_exists($logs_dir)) {
+        mkdir($logs_dir, 0755, true);
+    }
+
+    // Generate session ID for this request
+    if ($session_id === null || $force_new) {
+        $user_id = get_current_user_id() ?: 'guest';
+        $session_id = $user_id . '-' . date('Ymd-His') . '-' . substr(uniqid(), -6);
+        $log_file = $logs_dir . '/' . $session_id . '.log';
+
+        // Write header
+        $header = "\n" . str_repeat('=', 80) . "\n";
+        $header .= "AA CHECKOUT LOG - " . date('Y-m-d H:i:s') . "\n";
+        $header .= "Session: " . $session_id . "\n";
+        $header .= "User ID: " . $user_id . "\n";
+        $header .= "Request URI: " . ($_SERVER['REQUEST_URI'] ?? 'N/A') . "\n";
+        $header .= "WC-AJAX: " . ($_REQUEST['wc-ajax'] ?? 'N/A') . "\n";
+        $header .= "Action: " . ($_REQUEST['action'] ?? 'N/A') . "\n";
+        $header .= "Cookies: " . print_r($_COOKIE, true) . "\n";
+        $header .= str_repeat('=', 80) . "\n\n";
+        file_put_contents($log_file, $header, FILE_APPEND);
+    }
+
+    // Format log entry
+    $timestamp = date('H:i:s.') . substr(microtime(), 2, 3);
+    $entry = "[{$timestamp}] {$message}\n";
+    if (!empty($data)) {
+        $entry .= "    DATA: " . json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    }
+    $entry .= "\n";
+
+    // Write to file
+    file_put_contents($log_file, $entry, FILE_APPEND);
+
+    // Also log to debug.log for visibility
+    error_log("[AA-LOG] {$message} | " . json_encode($data));
+
+    return $session_id;
+}
+
+// Log ALL requests to track the flow
+add_action('init', function() {
+    // Only log checkout-related requests
+    $uri = $_SERVER['REQUEST_URI'] ?? '';
+    $wc_ajax = $_REQUEST['wc-ajax'] ?? '';
+    $action = $_REQUEST['action'] ?? '';
+
+    $is_checkout = (strpos($uri, 'checkout') !== false);
+    $is_stripe_ajax = (strpos($wc_ajax, 'stripe') !== false) || (strpos($action, 'stripe') !== false);
+    $is_wc_ajax = !empty($wc_ajax);
+
+    if ($is_checkout || $is_stripe_ajax || $is_wc_ajax) {
+        aa_log_transaction('=== REQUEST START ===', [
+            'uri' => $uri,
+            'method' => $_SERVER['REQUEST_METHOD'] ?? 'N/A',
+            'wc_ajax' => $wc_ajax,
+            'action' => $action,
+            'is_ajax' => wp_doing_ajax() ? 'YES' : 'NO',
+            'cookie_aa_payment_option' => $_COOKIE['aa_payment_option'] ?? 'NOT SET',
+        ]);
+    }
+}, 1);
+
 // maybe modify order total just before the payment goes through, so that we apply desired custom amount (if set) for the payment
 function maybe_modify_order_total_before_payment_processing( $total, $order ){
     
@@ -525,6 +598,15 @@ add_action('woocommerce_checkout_order_created', function( $order ){
 // WooCommerce AJAX uses $_REQUEST['wc-ajax'] NOT $_REQUEST['action']!
 // ============================================
 add_filter('woocommerce_cart_get_total', function($total) {
+    // Log EVERY call to this filter during AJAX
+    if (wp_doing_ajax()) {
+        aa_log_transaction('woocommerce_cart_get_total CALLED (AJAX)', [
+            'total' => $total,
+            'wc_ajax' => $_REQUEST['wc-ajax'] ?? 'NOT SET',
+            'action' => $_REQUEST['action'] ?? 'NOT SET',
+        ]);
+    }
+
     // Only modify during AJAX
     if (!wp_doing_ajax()) {
         return $total;
@@ -543,9 +625,11 @@ add_filter('woocommerce_cart_get_total', function($total) {
         return $total;
     }
 
-    // Log to WordPress debug.log
-    error_log('[AA Stripe Cart Total] *** FILTER TRIGGERED ***');
-    error_log('[AA Stripe Cart Total] wc-ajax: ' . $wc_action . ', action: ' . $action);
+    aa_log_transaction('*** STRIPE CREATE PAYMENT INTENT - FILTER MATCHED ***', [
+        'wc_ajax' => $wc_action,
+        'action' => $action,
+        'original_total' => $total,
+    ]);
 
     try {
         // Get payment option from cookie (set by JavaScript)
@@ -554,23 +638,31 @@ add_filter('woocommerce_cart_get_total', function($total) {
             $payment_option = sanitize_text_field($_COOKIE['aa_payment_option']);
         }
 
-        error_log('[AA Stripe Cart Total] Payment Option (cookie): ' . $payment_option);
-        error_log('[AA Stripe Cart Total] Original Total: ' . $total);
+        aa_log_transaction('Payment option from cookie', [
+            'payment_option' => $payment_option,
+            'all_cookies' => array_keys($_COOKIE),
+        ]);
 
         if ($payment_option === 'pay_deposit') {
             $checkout_instance = AA_Checkout::get_instance();
             $deposit_amount = $checkout_instance->get_min_deposit_amount();
 
-            error_log('[AA Stripe Cart Total] Deposit Amount: ' . $deposit_amount);
+            aa_log_transaction('Deposit payment selected', [
+                'deposit_amount' => $deposit_amount,
+                'original_total' => $total,
+            ]);
 
             if ($deposit_amount > 0 && $deposit_amount < $total) {
-                error_log('[AA Stripe Cart Total] MODIFIED: Returning deposit ' . $deposit_amount . ' instead of ' . $total);
+                aa_log_transaction('*** MODIFYING CART TOTAL ***', [
+                    'from' => $total,
+                    'to' => $deposit_amount,
+                ]);
                 return $deposit_amount;
             }
         }
 
     } catch (Exception $e) {
-        error_log('[AA Stripe Cart Total] ERROR: ' . $e->getMessage());
+        aa_log_transaction('ERROR in cart total filter', ['error' => $e->getMessage()]);
     }
 
     return $total;
@@ -592,7 +684,9 @@ add_filter('woocommerce_cart_get_total', function($total) {
         return $total;
     }
 
-    error_log('[AA Stripe Update Intent] *** FILTER TRIGGERED ***');
+    aa_log_transaction('*** STRIPE UPDATE PAYMENT INTENT ***', [
+        'original_total' => $total,
+    ]);
 
     try {
         $payment_option = '';
@@ -605,13 +699,16 @@ add_filter('woocommerce_cart_get_total', function($total) {
             $deposit_amount = $checkout_instance->get_min_deposit_amount();
 
             if ($deposit_amount > 0 && $deposit_amount < $total) {
-                error_log('[AA Stripe Update Intent] MODIFIED: Returning deposit ' . $deposit_amount);
+                aa_log_transaction('*** MODIFYING UPDATE INTENT TOTAL ***', [
+                    'from' => $total,
+                    'to' => $deposit_amount,
+                ]);
                 return $deposit_amount;
             }
         }
 
     } catch (Exception $e) {
-        error_log('[AA Stripe Update Intent] ERROR: ' . $e->getMessage());
+        aa_log_transaction('ERROR in update intent filter', ['error' => $e->getMessage()]);
     }
 
     return $total;
