@@ -596,15 +596,15 @@ add_action('woocommerce_checkout_order_created', function( $order ){
 // So we must intercept at the cart total level.
 //
 // WooCommerce AJAX uses $_REQUEST['wc-ajax'] NOT $_REQUEST['action']!
+//
+// CRITICAL: Must use recursion protection because AA_Checkout::get_instance()
+// calls WC()->cart->get_total() which would trigger this filter again!
 // ============================================
 add_filter('woocommerce_cart_get_total', function($total) {
-    // Log EVERY call to this filter during AJAX
-    if (wp_doing_ajax()) {
-        aa_log_transaction('woocommerce_cart_get_total CALLED (AJAX)', [
-            'total' => $total,
-            'wc_ajax' => $_REQUEST['wc-ajax'] ?? 'NOT SET',
-            'action' => $_REQUEST['action'] ?? 'NOT SET',
-        ]);
+    // RECURSION PROTECTION - prevent infinite loop
+    static $is_running = false;
+    if ($is_running) {
+        return $total;
     }
 
     // Only modify during AJAX
@@ -613,9 +613,6 @@ add_filter('woocommerce_cart_get_total', function($total) {
     }
 
     // Check if this is a Stripe payment-related request
-    // WC AJAX uses 'wc-ajax' parameter, not 'action'
-    // IMPORTANT: Stripe UPE uses DEFERRED payment intents - the intent is created
-    // during 'checkout' action, NOT 'wc_stripe_create_payment_intent'!
     $wc_action = $_REQUEST['wc-ajax'] ?? '';
     $action = $_REQUEST['action'] ?? '';
 
@@ -627,111 +624,61 @@ add_filter('woocommerce_cart_get_total', function($total) {
         return $total;
     }
 
-    aa_log_transaction('*** PAYMENT ACTION DETECTED - CHECKING FOR DEPOSIT ***', [
+    // Get payment option from cookie (set by JavaScript)
+    $payment_option = '';
+    if (isset($_COOKIE['aa_payment_option'])) {
+        $payment_option = sanitize_text_field($_COOKIE['aa_payment_option']);
+    }
+
+    aa_log_transaction('*** DEPOSIT FILTER - PAYMENT ACTION ***', [
         'wc_ajax' => $wc_action,
-        'action' => $action,
         'original_total' => $total,
+        'payment_option' => $payment_option,
     ]);
 
-    try {
-        // Get payment option from cookie (set by JavaScript)
-        $payment_option = '';
-        if (isset($_COOKIE['aa_payment_option'])) {
-            $payment_option = sanitize_text_field($_COOKIE['aa_payment_option']);
-        }
+    if ($payment_option !== 'pay_deposit') {
+        aa_log_transaction('Not pay_deposit - returning original total');
+        return $total;
+    }
 
-        aa_log_transaction('Payment option from cookie', [
-            'payment_option' => $payment_option,
-            'payment_option_raw' => $_COOKIE['aa_payment_option'] ?? 'NOT SET',
-            'payment_option_length' => strlen($payment_option),
-            'is_pay_deposit' => ($payment_option === 'pay_deposit') ? 'YES' : 'NO',
+    // SET RECURSION FLAG before calling any code that might trigger get_total()
+    $is_running = true;
+
+    try {
+        // Calculate deposit amount directly (£200 per passenger)
+        // Don't use AA_Checkout::get_instance() as it causes recursion!
+        $num_passengers = 1 + intval(AA_Session::get('steps_data.1.num_passengers', 0));
+        $deposit_per_person = 200; // AA_Checkout::$min_deposit_per_person
+        $deposit_amount = $deposit_per_person * $num_passengers;
+
+        aa_log_transaction('Deposit calculation', [
+            'num_passengers' => $num_passengers,
+            'deposit_per_person' => $deposit_per_person,
+            'deposit_amount' => $deposit_amount,
+            'original_total' => $total,
         ]);
 
-        if ($payment_option === 'pay_deposit') {
-            aa_log_transaction('INSIDE pay_deposit block - getting checkout instance');
-
-            $checkout_instance = AA_Checkout::get_instance();
-            aa_log_transaction('Got checkout instance, getting deposit amount');
-
-            $deposit_amount = $checkout_instance->get_min_deposit_amount();
-
-            aa_log_transaction('Deposit payment selected', [
-                'deposit_amount' => $deposit_amount,
-                'original_total' => $total,
-                'deposit_type' => gettype($deposit_amount),
-                'total_type' => gettype($total),
+        if ($deposit_amount > 0 && $deposit_amount < $total) {
+            aa_log_transaction('*** MODIFYING CART TOTAL ***', [
+                'from' => $total,
+                'to' => $deposit_amount,
             ]);
-
-            if ($deposit_amount > 0 && $deposit_amount < $total) {
-                aa_log_transaction('*** MODIFYING CART TOTAL ***', [
-                    'from' => $total,
-                    'to' => $deposit_amount,
-                ]);
-                return $deposit_amount;
-            } else {
-                aa_log_transaction('NOT modifying - conditions not met', [
-                    'deposit_amount' => $deposit_amount,
-                    'total' => $total,
-                    'deposit_gt_0' => ($deposit_amount > 0) ? 'YES' : 'NO',
-                    'deposit_lt_total' => ($deposit_amount < $total) ? 'YES' : 'NO',
-                ]);
-            }
+            $is_running = false;
+            return $deposit_amount;
         } else {
-            aa_log_transaction('NOT pay_deposit - skipping modification', [
-                'payment_option_value' => $payment_option,
-                'expected' => 'pay_deposit',
+            aa_log_transaction('NOT modifying - deposit >= total or deposit <= 0', [
+                'deposit_amount' => $deposit_amount,
+                'total' => $total,
             ]);
         }
 
     } catch (Exception $e) {
-        aa_log_transaction('ERROR in cart total filter', ['error' => $e->getMessage()]);
+        aa_log_transaction('ERROR', ['error' => $e->getMessage()]);
     }
 
+    $is_running = false;
     return $total;
 }, 99999);
 
-// Also intercept update_payment_intent to ensure amount stays correct
-add_filter('woocommerce_cart_get_total', function($total) {
-    if (!wp_doing_ajax()) {
-        return $total;
-    }
-
-    $wc_action = $_REQUEST['wc-ajax'] ?? '';
-    $action = $_REQUEST['action'] ?? '';
-
-    $is_stripe_update = ($wc_action === 'wc_stripe_update_payment_intent') ||
-                        ($action === 'wc_stripe_update_payment_intent');
-
-    if (!$is_stripe_update) {
-        return $total;
-    }
-
-    aa_log_transaction('*** STRIPE UPDATE PAYMENT INTENT ***', [
-        'original_total' => $total,
-    ]);
-
-    try {
-        $payment_option = '';
-        if (isset($_COOKIE['aa_payment_option'])) {
-            $payment_option = sanitize_text_field($_COOKIE['aa_payment_option']);
-        }
-
-        if ($payment_option === 'pay_deposit') {
-            $checkout_instance = AA_Checkout::get_instance();
-            $deposit_amount = $checkout_instance->get_min_deposit_amount();
-
-            if ($deposit_amount > 0 && $deposit_amount < $total) {
-                aa_log_transaction('*** MODIFYING UPDATE INTENT TOTAL ***', [
-                    'from' => $total,
-                    'to' => $deposit_amount,
-                ]);
-                return $deposit_amount;
-            }
-        }
-
-    } catch (Exception $e) {
-        aa_log_transaction('ERROR in update intent filter', ['error' => $e->getMessage()]);
-    }
-
-    return $total;
-}, 99998);
+// NOTE: The filter above now handles ALL payment actions including update_payment_intent
+// No need for separate filter - removed to avoid recursion issues
