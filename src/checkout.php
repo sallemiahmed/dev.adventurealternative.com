@@ -612,20 +612,22 @@ add_filter('woocommerce_cart_get_total', function($total) {
         return $total;
     }
 
-    // Check if this is a Stripe create payment intent request
+    // Check if this is a Stripe payment-related request
     // WC AJAX uses 'wc-ajax' parameter, not 'action'
+    // IMPORTANT: Stripe UPE uses DEFERRED payment intents - the intent is created
+    // during 'checkout' action, NOT 'wc_stripe_create_payment_intent'!
     $wc_action = $_REQUEST['wc-ajax'] ?? '';
     $action = $_REQUEST['action'] ?? '';
 
-    // Accept either format
-    $is_stripe_create = ($wc_action === 'wc_stripe_create_payment_intent') ||
-                        ($action === 'wc_stripe_create_payment_intent');
+    // Match: checkout, wc_stripe_create_payment_intent, wc_stripe_update_payment_intent
+    $is_payment_action = in_array($wc_action, ['checkout', 'wc_stripe_create_payment_intent', 'wc_stripe_update_payment_intent']) ||
+                         in_array($action, ['checkout', 'wc_stripe_create_payment_intent', 'wc_stripe_update_payment_intent']);
 
-    if (!$is_stripe_create) {
+    if (!$is_payment_action) {
         return $total;
     }
 
-    aa_log_transaction('*** STRIPE CREATE PAYMENT INTENT - FILTER MATCHED ***', [
+    aa_log_transaction('*** PAYMENT ACTION DETECTED - CHECKING FOR DEPOSIT ***', [
         'wc_ajax' => $wc_action,
         'action' => $action,
         'original_total' => $total,
