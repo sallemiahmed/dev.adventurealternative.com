@@ -528,10 +528,16 @@ add_filter('wc_stripe_generate_create_intent_request', function($request, $order
     }
 
     try {
-        // Check if deposit payment is selected
+        // Check if deposit payment is selected from multiple sources
+        // Priority: POST > Cookie > Session (cookie is most reliable for Stripe AJAX)
         $payment_option = $_POST['payment_option'] ?? '';
 
-        // Also check from session
+        // Check cookie (set by JavaScript when user selects payment option)
+        if (empty($payment_option) && isset($_COOKIE['aa_payment_option'])) {
+            $payment_option = sanitize_text_field($_COOKIE['aa_payment_option']);
+        }
+
+        // Fallback to session
         if (empty($payment_option)) {
             $session_data = AA_Session::get('steps_data.3', []);
             $payment_option = $session_data['payment_option'] ?? '';
@@ -540,6 +546,7 @@ add_filter('wc_stripe_generate_create_intent_request', function($request, $order
         AA_Checkout::$debug_data[] = [
             'wc_stripe_generate_create_intent_request' => 1,
             'payment_option' => $payment_option,
+            'payment_option_source' => !empty($_POST['payment_option']) ? 'POST' : (!empty($_COOKIE['aa_payment_option']) ? 'COOKIE' : 'SESSION'),
             'original_amount' => $request['amount'] ?? 0,
         ];
 
@@ -574,8 +581,15 @@ add_filter('wc_stripe_update_existing_intent_request', function($request, $order
 
     try {
         // Check if deposit payment and no transactions yet
+        // Priority: POST > Cookie > Session
         $payment_option = $_POST['payment_option'] ?? '';
-        
+
+        // Check cookie (set by JavaScript when user selects payment option)
+        if (empty($payment_option) && isset($_COOKIE['aa_payment_option'])) {
+            $payment_option = sanitize_text_field($_COOKIE['aa_payment_option']);
+        }
+
+        // Fallback to session
         if (empty($payment_option)) {
             $session_data = AA_Session::get('steps_data.3', []);
             $payment_option = $session_data['payment_option'] ?? '';
@@ -592,6 +606,7 @@ add_filter('wc_stripe_update_existing_intent_request', function($request, $order
         AA_Checkout::$debug_data[] = [
             'wc_stripe_update_existing_intent_request' => 1,
             'payment_option' => $payment_option,
+            'payment_option_source' => !empty($_POST['payment_option']) ? 'POST' : (!empty($_COOKIE['aa_payment_option']) ? 'COOKIE' : 'SESSION'),
             'has_transactions' => $has_transactions ? 1 : 0,
             'original_amount' => $request['amount'],
         ];

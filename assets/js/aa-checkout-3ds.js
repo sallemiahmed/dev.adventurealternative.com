@@ -452,12 +452,22 @@
             const value = $(this).val();
             console.log('[AA Checkout] Payment option changed:', value);
             sessionStorage.setItem('aa_payment_option', value);
+            // CRITICAL: Set cookie so PHP can read it during Stripe AJAX
+            document.cookie = 'aa_payment_option=' + encodeURIComponent(value) + '; path=/; SameSite=Lax';
+            console.log('[AA Checkout] Cookie set: aa_payment_option=' + value);
             $('body').trigger('update_checkout');
         });
 
         const savedOption = sessionStorage.getItem('aa_payment_option');
         if (savedOption && $paymentOptions.length) {
             $paymentOptions.filter('[value="' + savedOption + '"]').prop('checked', true).trigger('change');
+        }
+
+        // Set initial cookie from current selection
+        const currentSelection = $paymentOptions.filter(':checked').val();
+        if (currentSelection) {
+            document.cookie = 'aa_payment_option=' + encodeURIComponent(currentSelection) + '; path=/; SameSite=Lax';
+            console.log('[AA Checkout] Initial cookie set: aa_payment_option=' + currentSelection);
         }
     }
 
