@@ -517,120 +517,84 @@ add_action('woocommerce_checkout_order_created', function( $order ){
     
 }, 10);
 // ============================================
-// FIX: Modify Stripe UPE PaymentIntent amount for deposit payments
-// This filter runs when Stripe UPE creates the PaymentIntent (BEFORE order exists)
+// FIX: Modify cart total for Stripe UPE PaymentIntent creation
+// The WooCommerce Stripe plugin calls WC()->cart->get_total(false) directly
+// WITHOUT applying the wc_stripe_generate_create_intent_request filter!
+// So we must intercept at the cart total level.
 // ============================================
-add_filter('wc_stripe_generate_create_intent_request', function($request, $order, $prepared_source) {
+add_filter('woocommerce_cart_get_total', function($total) {
+    // Only modify during Stripe AJAX PaymentIntent creation
+    if (!wp_doing_ajax()) {
+        return $total;
+    }
 
-    // Only modify for checkout (not order-pay)
-    if (is_wc_endpoint_url('order-pay')) {
-        return $request;
+    // Check if this is a Stripe create payment intent request
+    $action = $_REQUEST['action'] ?? '';
+    if ($action !== 'wc_stripe_create_payment_intent') {
+        return $total;
     }
 
     try {
-        // Check if deposit payment is selected from multiple sources
-        // Priority: POST > Cookie > Session (cookie is most reliable for Stripe AJAX)
-        $payment_option = $_POST['payment_option'] ?? '';
-
-        // Check cookie (set by JavaScript when user selects payment option)
-        if (empty($payment_option) && isset($_COOKIE['aa_payment_option'])) {
+        // Get payment option from cookie (set by JavaScript)
+        $payment_option = '';
+        if (isset($_COOKIE['aa_payment_option'])) {
             $payment_option = sanitize_text_field($_COOKIE['aa_payment_option']);
         }
 
-        // Fallback to session
-        if (empty($payment_option)) {
-            $session_data = AA_Session::get('steps_data.3', []);
-            $payment_option = $session_data['payment_option'] ?? '';
-        }
-
-        AA_Checkout::$debug_data[] = [
-            'wc_stripe_generate_create_intent_request' => 1,
-            'payment_option' => $payment_option,
-            'payment_option_source' => !empty($_POST['payment_option']) ? 'POST' : (!empty($_COOKIE['aa_payment_option']) ? 'COOKIE' : 'SESSION'),
-            'original_amount' => $request['amount'] ?? 0,
-        ];
+        // Debug logging
+        error_log('[AA Stripe Cart Total] Action: ' . $action);
+        error_log('[AA Stripe Cart Total] Payment Option (cookie): ' . $payment_option);
+        error_log('[AA Stripe Cart Total] Original Total: ' . $total);
 
         if ($payment_option === 'pay_deposit') {
             $checkout_instance = AA_Checkout::get_instance();
             $deposit_amount = $checkout_instance->get_min_deposit_amount();
-            $original_amount = ($request['amount'] ?? 0) / 100; // Convert from cents
 
-            if ($deposit_amount > 0 && $deposit_amount < $original_amount) {
-                $request['amount'] = intval($deposit_amount * 100); // Convert to cents
+            error_log('[AA Stripe Cart Total] Deposit Amount: ' . $deposit_amount);
 
-                AA_Checkout::$debug_data[] = [
-                    'wc_stripe_generate_create_intent_request_MODIFIED' => 1,
-                    'deposit_amount' => $deposit_amount,
-                    'new_amount_cents' => $request['amount'],
-                ];
+            if ($deposit_amount > 0 && $deposit_amount < $total) {
+                error_log('[AA Stripe Cart Total] MODIFIED: Returning deposit ' . $deposit_amount . ' instead of ' . $total);
+                return $deposit_amount;
             }
         }
 
     } catch (Exception $e) {
-        AA_Checkout::$debug_data[] = [
-            'wc_stripe_generate_create_intent_request_ERROR' => $e->getMessage(),
-        ];
+        error_log('[AA Stripe Cart Total] ERROR: ' . $e->getMessage());
     }
 
-    return $request;
+    return $total;
+}, 99999);
 
-}, 10000, 3);
+// Also intercept update_payment_intent to ensure amount stays correct
+add_filter('woocommerce_cart_get_total', function($total) {
+    if (!wp_doing_ajax()) {
+        return $total;
+    }
 
-// Also hook into update_intent for safety
-add_filter('wc_stripe_update_existing_intent_request', function($request, $order, $prepared_source) {
+    $action = $_REQUEST['action'] ?? '';
+    if ($action !== 'wc_stripe_update_payment_intent') {
+        return $total;
+    }
 
     try {
-        // Check if deposit payment and no transactions yet
-        // Priority: POST > Cookie > Session
-        $payment_option = $_POST['payment_option'] ?? '';
-
-        // Check cookie (set by JavaScript when user selects payment option)
-        if (empty($payment_option) && isset($_COOKIE['aa_payment_option'])) {
+        $payment_option = '';
+        if (isset($_COOKIE['aa_payment_option'])) {
             $payment_option = sanitize_text_field($_COOKIE['aa_payment_option']);
         }
 
-        // Fallback to session
-        if (empty($payment_option)) {
-            $session_data = AA_Session::get('steps_data.3', []);
-            $payment_option = $session_data['payment_option'] ?? '';
-        }
-
-        $trip_order = new AA_Trip_Order($order);
-        $transactions = $trip_order->get_transactions();
-        $has_transactions = !empty($transactions->get_transactions());
-
-        if (!isset($request['amount'])) {
-            return $request;
-        }
-
-        AA_Checkout::$debug_data[] = [
-            'wc_stripe_update_existing_intent_request' => 1,
-            'payment_option' => $payment_option,
-            'payment_option_source' => !empty($_POST['payment_option']) ? 'POST' : (!empty($_COOKIE['aa_payment_option']) ? 'COOKIE' : 'SESSION'),
-            'has_transactions' => $has_transactions ? 1 : 0,
-            'original_amount' => $request['amount'],
-        ];
-
-        if ($payment_option === 'pay_deposit' && !$has_transactions) {
+        if ($payment_option === 'pay_deposit') {
             $checkout_instance = AA_Checkout::get_instance();
             $deposit_amount = $checkout_instance->get_min_deposit_amount();
-            $original_amount = $request['amount'] / 100;
 
-            if ($deposit_amount > 0 && $deposit_amount < $original_amount) {
-                $request['amount'] = intval($deposit_amount * 100);
-
-                AA_Checkout::$debug_data[] = [
-                    'wc_stripe_update_existing_intent_request_MODIFIED' => 1,
-                    'deposit_amount' => $deposit_amount,
-                    'new_amount_cents' => $request['amount'],
-                ];
+            if ($deposit_amount > 0 && $deposit_amount < $total) {
+                error_log('[AA Stripe Update Intent] MODIFIED: Returning deposit ' . $deposit_amount);
+                return $deposit_amount;
             }
         }
 
     } catch (Exception $e) {
-        // Silent fail
+        error_log('[AA Stripe Update Intent] ERROR: ' . $e->getMessage());
     }
 
-    return $request;
-
-}, 10000, 3);
+    return $total;
+}, 99998);
