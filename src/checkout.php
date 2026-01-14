@@ -521,18 +521,31 @@ add_action('woocommerce_checkout_order_created', function( $order ){
 // The WooCommerce Stripe plugin calls WC()->cart->get_total(false) directly
 // WITHOUT applying the wc_stripe_generate_create_intent_request filter!
 // So we must intercept at the cart total level.
+//
+// WooCommerce AJAX uses $_REQUEST['wc-ajax'] NOT $_REQUEST['action']!
 // ============================================
 add_filter('woocommerce_cart_get_total', function($total) {
-    // Only modify during Stripe AJAX PaymentIntent creation
+    // Only modify during AJAX
     if (!wp_doing_ajax()) {
         return $total;
     }
 
     // Check if this is a Stripe create payment intent request
+    // WC AJAX uses 'wc-ajax' parameter, not 'action'
+    $wc_action = $_REQUEST['wc-ajax'] ?? '';
     $action = $_REQUEST['action'] ?? '';
-    if ($action !== 'wc_stripe_create_payment_intent') {
+
+    // Accept either format
+    $is_stripe_create = ($wc_action === 'wc_stripe_create_payment_intent') ||
+                        ($action === 'wc_stripe_create_payment_intent');
+
+    if (!$is_stripe_create) {
         return $total;
     }
+
+    // Log to WordPress debug.log
+    error_log('[AA Stripe Cart Total] *** FILTER TRIGGERED ***');
+    error_log('[AA Stripe Cart Total] wc-ajax: ' . $wc_action . ', action: ' . $action);
 
     try {
         // Get payment option from cookie (set by JavaScript)
@@ -541,8 +554,6 @@ add_filter('woocommerce_cart_get_total', function($total) {
             $payment_option = sanitize_text_field($_COOKIE['aa_payment_option']);
         }
 
-        // Debug logging
-        error_log('[AA Stripe Cart Total] Action: ' . $action);
         error_log('[AA Stripe Cart Total] Payment Option (cookie): ' . $payment_option);
         error_log('[AA Stripe Cart Total] Original Total: ' . $total);
 
@@ -571,10 +582,17 @@ add_filter('woocommerce_cart_get_total', function($total) {
         return $total;
     }
 
+    $wc_action = $_REQUEST['wc-ajax'] ?? '';
     $action = $_REQUEST['action'] ?? '';
-    if ($action !== 'wc_stripe_update_payment_intent') {
+
+    $is_stripe_update = ($wc_action === 'wc_stripe_update_payment_intent') ||
+                        ($action === 'wc_stripe_update_payment_intent');
+
+    if (!$is_stripe_update) {
         return $total;
     }
+
+    error_log('[AA Stripe Update Intent] *** FILTER TRIGGERED ***');
 
     try {
         $payment_option = '';
